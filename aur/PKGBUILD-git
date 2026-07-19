@@ -1,0 +1,81 @@
+# Maintainer: Asitha Kanchana <asithakanchana1@users.noreply.github.com>
+# This is the development (-git) PKGBUILD.
+# Use this for local testing before a tagged release exists.
+# For the stable AUR package, see PKGBUILD (builds from a release tarball).
+
+pkgname=wasi-whatsapp-git
+pkgver=0.1.0.r1.gd9d552d
+pkgrel=1
+pkgdesc="Lightweight native WhatsApp Web wrapper for Arch Linux (Rust + Tauri + WebKitGTK) [git]"
+arch=('x86_64')
+url="https://github.com/AsithaKanchana1/W-ASI"
+license=('MIT')
+depends=(
+    'webkit2gtk-4.1'
+    'gtk3'
+    'libayatana-appindicator'
+    'appmenu-gtk-module'
+    'librsvg'
+)
+makedepends=(
+    'rust'
+    'cargo'
+    'base-devel'
+    'git'
+    'curl'
+    'wget'
+    'file'
+    'openssl'
+)
+provides=('wasi-whatsapp')
+conflicts=('wasi-whatsapp')
+
+# Builds from the git repo — no tag required.
+source=("$pkgname::git+https://github.com/AsithaKanchana1/W-ASI.git")
+sha256sums=('SKIP')
+
+export CARGO_HOME="$srcdir/.cargo"
+
+pkgver() {
+    cd "$pkgname"
+    git describe --long --tags --abbrev=7 2>/dev/null \
+        | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g' \
+        || printf "0.1.0.r%s.g%s" \
+            "$(git rev-list --count HEAD)" \
+            "$(git rev-parse --short=7 HEAD)"
+}
+
+prepare() {
+    cd "$pkgname/src-tauri"
+    cargo fetch --locked 2>/dev/null || cargo fetch
+}
+
+build() {
+    cd "$pkgname/src-tauri"
+    NO_STRIP=1 cargo tauri build
+}
+
+check() {
+    cd "$pkgname/src-tauri"
+    cargo test
+}
+
+package() {
+    cd "$pkgname"
+
+    install -Dm755 "src-tauri/target/release/wasi" \
+        "$pkgdir/usr/bin/wasi"
+
+    install -Dm644 "aur/wasi.desktop" \
+        "$pkgdir/usr/share/applications/wasi.desktop"
+
+    install -Dm644 "src-tauri/icons/32x32.png" \
+        "$pkgdir/usr/share/icons/hicolor/32x32/apps/wasi.png"
+    install -Dm644 "src-tauri/icons/128x128.png" \
+        "$pkgdir/usr/share/icons/hicolor/128x128/apps/wasi.png"
+    install -Dm644 "src-tauri/icons/128x128@2x.png" \
+        "$pkgdir/usr/share/icons/hicolor/256x256/apps/wasi.png"
+
+    install -Dm644 "LICENSE" \
+        "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

@@ -1,4 +1,16 @@
 # Maintainer: Asitha Kanchana <asithakanchana1@users.noreply.github.com>
+#
+# RELEASE PKGBUILD — builds from a published GitHub release tarball.
+# Requires a v*.*.* tag to be pushed to GitHub first.
+#
+# For local development testing (no tag needed), use PKGBUILD-git instead:
+#   cp PKGBUILD-git PKGBUILD.test && makepkg -si -p PKGBUILD.test
+#
+# Before submitting to AUR:
+#   1. Push the release tag: git tag v0.1.0 && git push origin v0.1.0
+#   2. Compute sha256: curl -sL <tarball_url> | sha256sum
+#   3. Replace sha256sums=('SKIP') with the real hash
+#   4. Regenerate .SRCINFO: makepkg --printsrcinfo > .SRCINFO
 
 pkgname=wasi-whatsapp
 pkgver=0.1.0
