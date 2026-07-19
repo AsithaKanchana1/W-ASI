@@ -1,1 +1,36 @@
+# ── Rust / Cargo ────────────────────────────────────────────────
 /target
+**/target/
+Cargo.lock.bak
+
+# ── Tauri ───────────────────────────────────────────────────────
+src-tauri/target/
+src-tauri/gen/
+
+# ── Build / Bundle artefacts ────────────────────────────────────
+*.AppImage
+*.deb
+*.rpm
+*.tar.gz
+*.tar.xz
+
+# ── IDE / Editor ────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS / System ─────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── AUR / makepkg ───────────────────────────────────────────────
+aur/pkg/
+aur/src/
+aur/*.pkg.tar.zst
+aur/*.pkg.tar.xz
+
+# ── Environment ─────────────────────────────────────────────────
+.env
+.env.local

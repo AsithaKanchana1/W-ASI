@@ -1,0 +1,231 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v*.*.*'
+  pull_request:
+    branches: [main]
+
+# Cancel any in-progress run for the same ref so only the latest matters.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+# ---------------------------------------------------------------------------
+# Job 1 — Lint & Format (runs on every push / PR)
+# ---------------------------------------------------------------------------
+jobs:
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable + clippy + rustfmt)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Cargo registry & build artefacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Check formatting
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy (deny warnings)
+        working-directory: src-tauri
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+# ---------------------------------------------------------------------------
+# Job 2 — Unit Tests (runs on every push / PR, headless)
+# ---------------------------------------------------------------------------
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-22.04
+    needs: lint
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry & build artefacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Run unit tests
+        working-directory: src-tauri
+        # Tests are headless — no display server needed.
+        run: cargo test --verbose
+
+# ---------------------------------------------------------------------------
+# Job 3 — AppImage Build & Release (runs only on version tags v*.*.*)
+# ---------------------------------------------------------------------------
+  build-appimage:
+    name: Build AppImage & Publish Release
+    runs-on: ubuntu-22.04
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    permissions:
+      contents: write   # Required to create GitHub Releases
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry & build artefacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libfuse2
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      # Workaround: NO_STRIP=1 prevents linuxdeploy from using its bundled
+      # strip binary, which cannot handle modern ELF .relr.dyn sections on
+      # recent Arch/Ubuntu kernels.
+      - name: Build AppImage
+        working-directory: src-tauri
+        env:
+          NO_STRIP: "1"
+        run: cargo tauri build --bundles appimage
+
+      - name: Locate AppImage artifact
+        id: locate
+        run: |
+          APPIMAGE=$(find src-tauri/target/release/bundle/appimage -name '*.AppImage' | head -1)
+          echo "PATH=$APPIMAGE" >> "$GITHUB_OUTPUT"
+          echo "NAME=$(basename $APPIMAGE)" >> "$GITHUB_OUTPUT"
+
+      - name: QA — verify AppImage exists and has non-zero size
+        run: |
+          APPIMAGE="${{ steps.locate.outputs.PATH }}"
+          if [ ! -f "$APPIMAGE" ]; then
+            echo "❌ AppImage not found at $APPIMAGE"
+            exit 1
+          fi
+          SIZE=$(stat -c%s "$APPIMAGE")
+          echo "✅ AppImage found: $APPIMAGE ($SIZE bytes)"
+          if [ "$SIZE" -lt 1000000 ]; then
+            echo "❌ AppImage is suspiciously small ($SIZE bytes) — build may have failed"
+            exit 1
+          fi
+
+      - name: Generate SHA256 checksum
+        run: |
+          sha256sum "${{ steps.locate.outputs.PATH }}" \
+            > "${{ steps.locate.outputs.PATH }}.sha256"
+
+      - name: Create GitHub Release & upload AppImage
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "WASI ${{ github.ref_name }}"
+          generate_release_notes: true
+          files: |
+            ${{ steps.locate.outputs.PATH }}
+            ${{ steps.locate.outputs.PATH }}.sha256
+
+# ---------------------------------------------------------------------------
+# Job 4 — Update AUR PKGBUILD (runs after a successful release)
+# ---------------------------------------------------------------------------
+  update-aur:
+    name: Update AUR Package
+    runs-on: ubuntu-22.04
+    needs: build-appimage
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Compute SHA256 of release tarball
+        id: sha
+        run: |
+          URL="https://github.com/AsithaKanchana1/W-ASI/archive/refs/tags/${{ github.ref_name }}.tar.gz"
+          SHA=$(curl -sL "$URL" | sha256sum | awk '{print $1}')
+          echo "SHA256=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Update PKGBUILD version & checksum
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          SHA="${{ steps.sha.outputs.SHA256 }}"
+          sed -i "s/^pkgver=.*/pkgver=$VERSION/" aur/PKGBUILD
+          sed -i "s/^pkgrel=.*/pkgrel=1/" aur/PKGBUILD
+          sed -i "s/sha256sums=('SKIP')/sha256sums=('$SHA')/" aur/PKGBUILD
+          # Also update .SRCINFO
+          sed -i "s/pkgver = .*/pkgver = $VERSION/" aur/.SRCINFO
+          sed -i "s/sha256sums = SKIP/sha256sums = $SHA/" aur/.SRCINFO
+
+      # Requires AUR_SSH_PRIVATE_KEY stored as a GitHub Actions secret.
+      # See: https://github.com/KSXGitHub/github-actions-deploy-aur
+      - name: Deploy to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v2.7.2
+        with:
+          pkgname: wasi-whatsapp
+          pkgbuild: ./aur/PKGBUILD
+          commit_username: Asitha Kanchana
+          commit_email: asithakanchana1@users.noreply.github.com
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ github.ref_name }}"
+          force_push: true

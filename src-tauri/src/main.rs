@@ -6,9 +6,9 @@
 use std::{error::Error, fs, io, path::PathBuf};
 
 use tauri::{
-    App, AppHandle, Manager, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent},
+    App, AppHandle, Manager, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
 
 // ---------------------------------------------------------------------------
@@ -33,7 +33,8 @@ const WHATSAPP_WEB_URL: &str = "https://web.whatsapp.com";
 /// WebKitGTK advertises itself as a generic webview which can trigger WhatsApp
 /// to show an unsupported-browser page.  Spoofing a modern Chrome UA prevents
 /// this and keeps sessions from being logged out.
-const DESKTOP_CHROME_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) \
+const DESKTOP_CHROME_UA: &str =
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) \
      Chrome/126.0.0.0 Safari/537.36";
 
 // ---------------------------------------------------------------------------
@@ -107,7 +108,7 @@ fn configure_persistent_storage<R: Runtime>(app: &App<R>) -> Result<PathBuf, Box
     let app_data_dir = app
         .path()
         .app_data_dir()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| io::Error::other(e.to_string()))?;
 
     let profile_dir = app_data_dir.join("webkit-profile");
     fs::create_dir_all(&profile_dir)?;
