@@ -34,8 +34,6 @@ conflicts=('wasi-whatsapp')
 source=("$pkgname::git+https://github.com/AsithaKanchana1/W-ASI.git")
 sha256sums=('SKIP')
 
-export CARGO_HOME="$srcdir/.cargo"
-
 pkgver() {
     cd "$pkgname"
     git describe --long --tags --abbrev=7 2>/dev/null \
@@ -46,16 +44,23 @@ pkgver() {
 }
 
 prepare() {
+    # CARGO_HOME must be set inside functions — $srcdir is undefined at global scope.
+    export CARGO_HOME="$srcdir/.cargo"
+
     cd "$pkgname/src-tauri"
     cargo fetch --locked 2>/dev/null || cargo fetch
 }
 
 build() {
+    export CARGO_HOME="$srcdir/.cargo"
+
     cd "$pkgname/src-tauri"
     NO_STRIP=1 cargo tauri build
 }
 
 check() {
+    export CARGO_HOME="$srcdir/.cargo"
+
     cd "$pkgname/src-tauri"
     cargo test
 }
