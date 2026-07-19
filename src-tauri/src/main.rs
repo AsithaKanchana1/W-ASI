@@ -3,7 +3,13 @@
     windows_subsystem = "windows"
 )]
 
-use std::{error::Error, fs, io, path::PathBuf};
+use std::{
+    error::Error,
+    fs,
+    io::{self, Read, Write},
+    os::unix::net::{UnixListener, UnixStream},
+    path::PathBuf,
+};
 
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
@@ -36,6 +42,16 @@ const WHATSAPP_WEB_URL: &str = "https://web.whatsapp.com";
 const DESKTOP_CHROME_UA: &str =
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) \
      Chrome/126.0.0.0 Safari/537.36";
+
+/// Unix socket used for single-instance IPC.
+///
+/// If WASI is already running, a second invocation sends "show" through this
+/// socket and exits immediately — useful on Hyprland (no system tray) where
+/// the user binds a key to `exec, wasi` to toggle the window.
+const IPC_SOCKET_PATH: &str = "/tmp/wasi-ipc.sock";
+
+/// IPC command sent from a new instance to the running one.
+const IPC_CMD_SHOW: &[u8] = b"show";
 
 // ---------------------------------------------------------------------------
 // Data structures (also used by unit tests, so kept outside main)
@@ -95,6 +111,71 @@ fn tray_menu_entries() -> [TrayMenuEntry; 2] {
 }
 
 // ---------------------------------------------------------------------------
+// Single-instance IPC (Unix socket)
+//
+// Design:
+//   * On startup, try to connect to IPC_SOCKET_PATH.
+//   * If connection succeeds → another instance is running.  Send "show" and
+//     exit so the existing window is brought to the foreground.
+//   * If connection fails → we are the first instance.  Bind the socket and
+//     listen for "show" commands in a background thread.
+//
+// This is the mechanism that lets Hyprland users (who have no system tray)
+// bind `exec, wasi` to a key and always get the window back.
+// ---------------------------------------------------------------------------
+
+/// Attempts to contact an already-running WASI instance.
+///
+/// Returns `true` if a running instance was found and notified (the caller
+/// should exit immediately).  Returns `false` if no instance is listening.
+fn try_notify_existing_instance() -> bool {
+    match UnixStream::connect(IPC_SOCKET_PATH) {
+        Ok(mut stream) => {
+            // Another instance is running — tell it to show its window.
+            if let Err(e) = stream.write_all(IPC_CMD_SHOW) {
+                eprintln!("WASI: IPC write error: {e}");
+            }
+            true
+        }
+        Err(_) => false, // No existing instance — we are the primary.
+    }
+}
+
+/// Spawns a background thread that listens for IPC commands on the Unix socket.
+///
+/// When a "show" command arrives, the main window is shown and focused.
+/// The socket file is removed on startup so stale sockets from a previous
+/// crash do not block binding.
+fn start_ipc_listener<R: Runtime + 'static>(app_handle: AppHandle<R>) {
+    // Remove any stale socket left by a previous crash.
+    let _ = fs::remove_file(IPC_SOCKET_PATH);
+
+    std::thread::spawn(move || {
+        let listener = match UnixListener::bind(IPC_SOCKET_PATH) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("WASI: failed to bind IPC socket at {IPC_SOCKET_PATH}: {e}");
+                return;
+            }
+        };
+
+        for stream in listener.incoming() {
+            match stream {
+                Ok(mut s) => {
+                    let mut buf = [0u8; 16];
+                    if let Ok(n) = s.read(&mut buf) {
+                        if &buf[..n] == IPC_CMD_SHOW {
+                            show_main_window(&app_handle);
+                        }
+                    }
+                }
+                Err(e) => eprintln!("WASI: IPC stream error: {e}"),
+            }
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Storage / persistence
 // ---------------------------------------------------------------------------
 
@@ -129,6 +210,13 @@ fn configure_persistent_storage<R: Runtime>(app: &App<R>) -> Result<PathBuf, Box
 /// Instead of destroying the window (and tearing down the WebSocket connection
 /// WhatsApp Web keeps open), we hide the window and let it live in the system
 /// tray.  This preserves message notifications even while the window is hidden.
+///
+/// On Hyprland (no tray visible), the window can be restored by running
+/// `wasi` again — the single-instance IPC sends a "show" command to this
+/// instance via the Unix socket.
+///
+/// To **fully quit** from Hyprland, use: `hyprctl dispatch closewindow class:wasi`
+/// or bind a separate key to `exec, pkill wasi`.
 fn attach_close_to_tray_handler<R: Runtime>(window: &WebviewWindow<R>) {
     let w = window.clone();
     window.on_window_event(move |event| {
@@ -164,8 +252,10 @@ fn create_main_window<R: Runtime>(app: &AppHandle<R>) -> Result<WebviewWindow<R>
 
 /// Shows, un-minimises, and focuses the main window.
 ///
-/// Called both from the tray left-click handler and the "Show" menu item so
-/// the user can always bring WASI back to the foreground.
+/// Called from:
+/// * The tray left-click handler (tray-capable DEs like GNOME/KDE/XFCE).
+/// * The "Show" tray menu item.
+/// * The IPC socket listener (Hyprland / tray-less environments).
 fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
     match app.get_webview_window(APP_WINDOW_LABEL) {
         Some(window) => {
@@ -249,8 +339,17 @@ fn run_app() -> tauri::Result<()> {
             }
 
             // 3. System tray – stored in managed state to keep it alive.
+            //    Works on tray-capable DEs (GNOME, KDE, XFCE …).
+            //    On Hyprland the icon is invisible but the IPC socket (step 4)
+            //    provides the same "bring window back" capability.
             let tray = setup_tray(&handle)?;
             app.manage(tray);
+
+            // 4. IPC socket listener – enables single-instance behaviour.
+            //    Running `wasi` again sends "show" here instead of opening
+            //    a second window.  This is the primary restore mechanism on
+            //    tray-less compositors such as Hyprland.
+            start_ipc_listener(handle.clone());
 
             Ok(())
         })
@@ -258,9 +357,18 @@ fn run_app() -> tauri::Result<()> {
 }
 
 fn main() {
+    // Check whether another WASI instance is already running.
+    // If so, send it a "show" command and exit — this instance's job is done.
+    if try_notify_existing_instance() {
+        return;
+    }
+
     if let Err(err) = run_app() {
         eprintln!("WASI: fatal error: {err}");
     }
+
+    // Clean up the IPC socket when the primary instance exits normally.
+    let _ = fs::remove_file(IPC_SOCKET_PATH);
 }
 
 // ---------------------------------------------------------------------------
@@ -296,7 +404,7 @@ mod tests {
     }
 
     /// Ensures no two tray menu items share an ID (which would make event
-    /// dispatch ambiguous at runtime).
+    /// dispatch ambiguous at runtime).\
     #[test]
     fn tray_menu_ids_are_unique() {
         let entries = tray_menu_entries();
@@ -340,6 +448,19 @@ mod tests {
         assert!(
             DESKTOP_CHROME_UA.contains("Linux"),
             "UA must advertise Linux platform"
+        );
+    }
+
+    /// Verifies the IPC socket path constant is an absolute path under /tmp.
+    #[test]
+    fn ipc_socket_path_is_valid() {
+        assert!(
+            IPC_SOCKET_PATH.starts_with("/tmp/"),
+            "IPC socket must be under /tmp"
+        );
+        assert!(
+            !IPC_SOCKET_PATH.is_empty(),
+            "IPC socket path must not be empty"
         );
     }
 }

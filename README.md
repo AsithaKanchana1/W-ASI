@@ -56,12 +56,43 @@ On first launch, scan the WhatsApp QR code. Your session is saved and survives r
 
 | Action | Result |
 |---|---|
-| Close window | Hides to system tray (app keeps running) |
+| Close window (✕) | Hides to system tray — app keeps running in background |
 | Left-click tray icon | Restore window |
-| Right-click tray → Quit | Exit |
+| Right-click tray → Quit | Fully exit |
 
 **Session data** is stored at `~/.local/share/com.asithakanchana.wasi/webkit-profile/`.  
 Delete this directory to log out.
+
+### Hyprland (no system tray)
+
+Hyprland has no system tray by default, so the tray icon is invisible.  
+The window is still hidden when you close it — WhatsApp stays connected in the background.
+
+**Restore the window** by running `wasi` again from any terminal or keybind.  
+If WASI is already running, the second invocation sends a show command to the existing instance via a Unix socket (`/tmp/wasi-ipc.sock`) and exits immediately — no second window opens.
+
+Add this to your `~/.config/hypr/hyprland.conf`:
+
+```ini
+# Toggle WASI window (show if hidden, launch if not running)
+bind = SUPER, W, exec, wasi
+```
+
+**About `Super+Q` (`killactive`):**  
+Hyprland's `killactive` sends a close request to the window — WASI intercepts this and hides instead of quitting (to keep WhatsApp connected).  
+Your `WIN+Q` bind will **hide** WASI, not kill it. Use `SUPER, W` (above) to get it back.
+
+To **fully quit** WASI from Hyprland, use:
+
+```bash
+pkill wasi
+```
+
+Or add a dedicated keybind:
+
+```ini
+bind = SUPER SHIFT, W, exec, pkill wasi
+```
 
 ---
 
