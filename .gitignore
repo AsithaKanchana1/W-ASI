@@ -35,3 +35,4 @@ aur-pkg/          # cloned AUR git repo (managed separately)
 # ── Environment ─────────────────────────────────────────────────
 .env
 .env.local
+aur-pkg/
