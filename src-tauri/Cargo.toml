@@ -1,0 +1,26 @@
+[package]
+name = "wasi"
+version = "0.1.0"
+description = "WASI - lightweight native WhatsApp Web wrapper for Arch Linux"
+authors = ["Asitha Kanchana <asithakanchana1@users.noreply.github.com>"]
+license = "MIT"
+repository = "https://github.com/AsithaKanchana1/WASI"
+edition = "2021"
+rust-version = "1.75"
+
+[build-dependencies]
+tauri-build = { version = "2.6", features = [] }
+
+[dependencies]
+tauri = { version = "2.6", features = ["macos-private-api", "tray-icon"] }
+url = "2.5"
+
+# No custom features required for this application.
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
